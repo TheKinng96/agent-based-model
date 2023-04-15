@@ -1,19 +1,46 @@
 <script lang="ts" setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import * as d3 from 'd3';
 import { LineChart } from 'vue-chart-3';
+import axios from 'axios';
+
+interface IAgent {
+  id: number;
+  attributes: IAttribute[];
+  x: number;
+  y: number;
+}
+
+interface IAttribute {
+  label: string;
+  min: number;
+  max: number;
+}
 
 const numAgents = ref(10);
 const svgContainer = ref(null);
-const initialValueFields = ref<Array<{ label: string; min: number; max: number }>>([]);
+const initialValueFields = ref<Array<IAttribute>>([]);
 const newFieldLabel = ref('');
 const newFieldMin = ref(0);
 const newFieldMax = ref(0);
-const agents = ref([
-  { id: 1, attribute1: 5, attribute2: 10, chartData: { /* ... */ } },
-  { id: 2, attribute1: 8, attribute2: 12, chartData: { /* ... */ } },
-  // ... more agents ...
-]);
+const numIterations = ref(1);
+const movable = ref(false);
+const moveDistance = ref(1);
+
+// Coordinate ranges
+const xMax = ref(100);
+const yMax = ref(100);
+
+const coordinateRanges = computed(() => {
+  return {
+    xMin: 0,
+    xMax: xMax.value,
+    yMin: 0,
+    yMax: yMax.value,
+  };
+});
+
+const agents = ref<IAgent[]>([]);
 const selectedAgent = ref<{id: number, attribute1: number, chartData: any} | null>(null);
 
 function showAgentDetails(agent: any) {
@@ -43,8 +70,8 @@ function addInitialValueField() {
 }
 
 function initVisualization() {
-  const width = 600;
-  const height = 400;
+  const width = coordinateRanges.value.xMax;
+  const height = coordinateRanges.value.yMax;
   
   const svg = d3.select(svgContainer.value)
     .append('svg')
@@ -52,13 +79,14 @@ function initVisualization() {
     .attr('height', height);
 
   // Add agents as SVG circles
-  const agents = Array.from({ length: numAgents.value }, () => ({
-    x: Math.random() * width,
-    y: Math.random() * height,
+  const agentsData = agents.value.map((record: IAgent) => ({
+    x: record.x,
+    y: record.y,
   }));
+  console.log(agentsData)
 
   svg.selectAll('circle')
-    .data(agents)
+    .data(agentsData)
     .join('circle')
     .attr('cx', (d) => d.x)
     .attr('cy', (d) => d.y)
@@ -66,7 +94,25 @@ function initVisualization() {
     .attr('fill', 'blue');
 }
 
-watch(numAgents, () => {
+function updateVisualization() {
+  const agentsData = agents.value.map((record: IAgent) => ({
+    x: record.x,
+    y: record.y,
+  }));
+
+  console.log(agentsData)
+
+  d3.select(svgContainer.value)
+    .selectAll('circle')
+    .data(agentsData)
+    .join('circle')
+    .attr('cx', (d) => d.x)
+    .attr('cy', (d) => d.y)
+    .attr('r', 5)
+    .attr('fill', 'blue');
+}
+
+watch(agents.value, () => {
   d3.select(svgContainer.value).selectAll('*').remove();
   initVisualization();
 });
@@ -76,19 +122,51 @@ onUnmounted(() => {
   d3.select(svgContainer.value).selectAll('*').remove();
 });
 
-function startSimulation() {
-  console.log('Starting simulation with', numAgents.value, 'agents');
-  // Call the API to start the simulation and update the visualization
+async function setupSimulation() {
+  const payload = {
+    numAgents: numAgents.value,
+    attributes: initialValueFields.value,
+    numIterations: numIterations.value,
+    movable: movable.value,
+    coordinateRanges: coordinateRanges.value,
+    moveDistance: moveDistance.value,
+  };
+
+  try {
+    const response = await axios.post('http://localhost:3001/simulate', payload);
+    if (response.data.success) {
+      const results = response.data.results;
+      agents.value = results;
+      initVisualization();
+    } else {
+      console.error('Simulation failed');
+    }
+  } catch (error) {
+    console.error('Error while starting simulation:', error);
+  }
 }
 
-function pauseSimulation() {
-  console.log('Pausing simulation');
-  // Pause the simulation
-}
+async function startSimulation() {
+  const payload = {
+    agents: agents.value,
+    numIterations: numIterations.value,
+    movable: movable.value,
+    coordinateRanges: coordinateRanges.value,
+    moveDistance: moveDistance.value,
+  };
 
-function stopSimulation() {
-  console.log('Stopping simulation');
-  // Stop the simulation
+  try {
+    const response = await axios.post('http://localhost:3001/next', payload);
+    if (response.data.success) {
+      const results = response.data.results;
+      agents.value = results;
+      updateVisualization();
+    } else {
+      console.error('Simulation failed');
+    }
+  } catch (error) {
+    console.error('Error while starting simulation:', error);
+  }
 }
 
 function resetSimulation() {
@@ -129,9 +207,18 @@ function resetSimulation() {
 
     <div class="controls">
       <h2>Control Panel</h2>
+      <label for="numIterations">Total Iterations:</label>
+      <input type="number" id="numIterations" min="1" v-model="numIterations"/>
+
+      <label for="movable-checkbox">Allow agents to move:</label>
+      <input
+        id="movable-checkbox"
+        type="checkbox"
+        v-model="movable"
+      />
+
+      <button @click="setupSimulation">Setup</button>
       <button @click="startSimulation">Start</button>
-      <button @click="pauseSimulation">Pause</button>
-      <button @click="stopSimulation">Stop</button>
       <button @click="resetSimulation">Reset</button>
     </div>
 
@@ -150,8 +237,6 @@ function resetSimulation() {
         <tbody>
           <tr v-for="agent in agents" :key="agent.id" @click="showAgentDetails(agent)">
             <td>{{ agent.id }}</td>
-            <td>{{ agent.attribute1 }}</td>
-            <td>{{ agent.attribute2 }}</td>
             <!-- Add more cells for additional attributes -->
           </tr>
         </tbody>
